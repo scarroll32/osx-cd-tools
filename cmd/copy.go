@@ -17,6 +17,7 @@ var (
 	flagSpeed     int
 	flagKeepImage bool
 	flagImageDir  string
+	flagNoRaw     bool
 )
 
 var copyCmd = &cobra.Command{
@@ -37,6 +38,7 @@ func init() {
 	copyCmd.Flags().IntVarP(&flagSpeed, "speed", "s", 4, "Read/write speed multiplier (lower = higher quality, 1–8 recommended)")
 	copyCmd.Flags().BoolVar(&flagKeepImage, "keep-image", false, "Keep the disc image files after copying")
 	copyCmd.Flags().StringVar(&flagImageDir, "image-dir", "", "Directory to store the disc image (implies --keep-image, defaults to a temp dir)")
+	copyCmd.Flags().BoolVar(&flagNoRaw, "no-raw", false, "Disable raw sector reading (enables error correction — use for scratched discs)")
 	rootCmd.AddCommand(copyCmd)
 }
 
@@ -90,8 +92,12 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot find cdrdao device: %w", err)
 	}
 
-	fmt.Printf("Reading disc at %dx speed (raw mode for maximum quality)...\n", flagSpeed)
-	if err := readDisc(cdrdaoDevice, tocFile, binFile, flagSpeed); err != nil {
+	if flagNoRaw {
+		fmt.Printf("Reading disc at %dx speed (error-correction mode)...\n", flagSpeed)
+	} else {
+		fmt.Printf("Reading disc at %dx speed (raw mode for maximum quality)...\n", flagSpeed)
+	}
+	if err := readDisc(cdrdaoDevice, tocFile, binFile, flagSpeed, flagNoRaw); err != nil {
 		return fmt.Errorf("disc read failed: %w", err)
 	}
 	fmt.Println("Source disc read successfully.")
@@ -126,16 +132,19 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// readDisc runs cdrdao read-cd in --read-raw mode for a bit-perfect audio copy.
-func readDisc(device, tocFile, binFile string, speed int) error {
+// readDisc runs cdrdao read-cd. Raw mode is bit-perfect but has no error recovery;
+// disable it (noRaw=true) for scratched discs so cdrdao can correct read errors.
+func readDisc(device, tocFile, binFile string, speed int, noRaw bool) error {
 	args := []string{
 		"read-cd",
-		"--read-raw",                          // raw 2352-byte sectors — preserves all audio data
 		"--device", device,
 		"--speed", fmt.Sprintf("%d", speed),
 		"--datafile", binFile,
-		tocFile,
 	}
+	if !noRaw {
+		args = append(args, "--read-raw")
+	}
+	args = append(args, tocFile)
 	return runVisible("cdrdao", args...)
 }
 
