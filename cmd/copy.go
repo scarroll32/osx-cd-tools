@@ -101,6 +101,7 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("Ejecting source disc...")
+	_ = cdtools.Unmount(device) // macOS may remount after cdrdao exits
 	if err := cdtools.Eject(device); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not eject disc automatically (%v) — please eject manually.\n", err)
 	}
