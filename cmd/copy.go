@@ -45,17 +45,6 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	device := flagDevice
-	if device == "" {
-		fmt.Println("Scanning for CD drives...")
-		var err error
-		device, err = cdtools.DetectDevice()
-		if err != nil {
-			return fmt.Errorf("%w\n\nUse --device to specify the drive path (e.g. --device /dev/disk2)", err)
-		}
-		fmt.Printf("Found drive: %s\n", device)
-	}
-
 	// Resolve image directory.
 	imageDir := flagImageDir
 	if imageDir != "" {
@@ -77,13 +66,32 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	tocFile := filepath.Join(imageDir, "disc.toc")
 	binFile := filepath.Join(imageDir, "disc.bin")
 
-	// ── Step 1: Read source disc ──────────────────────────────────────────────
 	fmt.Println("\n── Step 1 of 2: Read source disc ───────────────────────────────")
 	fmt.Println("Insert the SOURCE audio CD into the drive, then press Enter...")
 	waitForEnter()
 
+	device := flagDevice
+	if device == "" {
+		fmt.Println("Detecting CD drive...")
+		var err error
+		device, err = cdtools.DetectDevice()
+		if err != nil {
+			return fmt.Errorf("%w\n\nUse --device to specify the drive path (e.g. --device /dev/rdisk2)", err)
+		}
+		fmt.Printf("Found drive: %s\n", device)
+	}
+
+	fmt.Println("Unmounting disc for raw access...")
+	if err := cdtools.Unmount(device); err != nil {
+		return fmt.Errorf("cannot unmount disc: %w", err)
+	}
+	cdrdaoDevice, err := cdtools.ScanCdrdao()
+	if err != nil {
+		return fmt.Errorf("cannot find cdrdao device: %w", err)
+	}
+
 	fmt.Printf("Reading disc at %dx speed (raw mode for maximum quality)...\n", flagSpeed)
-	if err := readDisc(device, tocFile, binFile, flagSpeed); err != nil {
+	if err := readDisc(cdrdaoDevice, tocFile, binFile, flagSpeed); err != nil {
 		return fmt.Errorf("disc read failed: %w", err)
 	}
 	fmt.Println("Source disc read successfully.")
@@ -102,8 +110,11 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	fmt.Println("Insert a blank CD-R into the drive, then press Enter...")
 	waitForEnter()
 
+	fmt.Println("Unmounting disc for raw access...")
+	_ = cdtools.Unmount(device) // blank discs may not be mounted — ignore error
+
 	fmt.Printf("Writing disc at %dx speed...\n", flagSpeed)
-	if err := writeDisc(device, tocFile, flagSpeed); err != nil {
+	if err := writeDisc(cdrdaoDevice, tocFile, flagSpeed); err != nil {
 		return fmt.Errorf("disc write failed: %w", err)
 	}
 

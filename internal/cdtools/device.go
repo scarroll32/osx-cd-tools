@@ -8,41 +8,43 @@ import (
 	"strings"
 )
 
-// ScanDevices returns all CD/DVD drive device paths found by cdrdao.
+// ScanDevices returns CD/DVD drive device paths via macOS diskutil.
+// The drive must have a disc inserted to appear in diskutil list.
 func ScanDevices() ([]string, error) {
-	out, err := exec.Command("cdrdao", "scan-bus").CombinedOutput()
+	out, err := exec.Command("diskutil", "list").CombinedOutput()
 	if err != nil {
-		// cdrdao returns non-zero even on success when printing device list;
-		// only fail if output is empty.
-		if len(out) == 0 {
-			return nil, fmt.Errorf("cdrdao scan-bus failed: %w", err)
-		}
+		return nil, fmt.Errorf("diskutil list: %w", err)
 	}
 
 	var devices []string
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Lines with device paths look like: /dev/diskN: Vendor Model, Rev X.XX
-		if strings.HasPrefix(line, "/dev/") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) >= 1 {
-				devices = append(devices, strings.TrimSpace(parts[0]))
-			}
+		if !strings.HasPrefix(line, "/dev/disk") {
+			continue
+		}
+		disk := strings.Fields(line)[0]
+		if isOpticalDisk(disk) {
+			// cdrdao uses raw device nodes (/dev/rdiskN) for direct sector access
+			devices = append(devices, strings.Replace(disk, "/dev/disk", "/dev/rdisk", 1))
 		}
 	}
 	return devices, nil
 }
 
-// DetectDevice returns the first optical drive device found, or an error if
-// none is detected.
+func isOpticalDisk(disk string) bool {
+	out, _ := exec.Command("diskutil", "info", disk).CombinedOutput()
+	return bytes.Contains(out, []byte("Optical Drive Type"))
+}
+
+// DetectDevice returns the first optical drive device found, or an error if none is detected.
 func DetectDevice() (string, error) {
 	devices, err := ScanDevices()
 	if err != nil {
 		return "", err
 	}
 	if len(devices) == 0 {
-		return "", fmt.Errorf("no CD/DVD drives found — is a drive connected?")
+		return "", fmt.Errorf("no CD/DVD drives found — is the drive connected and a disc inserted?")
 	}
 	return devices[0], nil
 }
@@ -55,7 +57,40 @@ func CheckDependencies() error {
 	return nil
 }
 
-// Eject ejects the disc in the given device using diskutil.
+// Unmount unmounts the disc without ejecting it so cdrdao can access it.
+// Accepts /dev/diskN or /dev/rdiskN.
+func Unmount(device string) error {
+	disk := strings.Replace(device, "/dev/rdisk", "/dev/disk", 1)
+	out, err := exec.Command("diskutil", "unmount", disk).CombinedOutput()
+	if err != nil {
+		// "not mounted" is fine — blank discs and already-unmounted discs land here
+		if bytes.Contains(out, []byte("not mounted")) {
+			return nil
+		}
+		return fmt.Errorf("diskutil unmount %s: %w", disk, err)
+	}
+	return nil
+}
+
+// ScanCdrdao returns the cdrdao device address for the first optical drive
+// found via "cdrdao scanbus". Must be called after Unmount — cdrdao scanbus
+// fails when the disc is still mounted.
+func ScanCdrdao() (string, error) {
+	out, err := exec.Command("cdrdao", "scanbus").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("cdrdao scanbus: %w\n%s", err, bytes.TrimSpace(out))
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if idx := strings.Index(line, " : "); idx > 0 {
+			return strings.TrimSpace(line[:idx]), nil
+		}
+	}
+	return "", fmt.Errorf("no optical drives found via cdrdao scanbus")
+}
+
+// Eject ejects the disc in the given device.
 func Eject(device string) error {
 	return exec.Command("diskutil", "eject", device).Run()
 }
